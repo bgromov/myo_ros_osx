@@ -1,13 +1,10 @@
-# myo_ros_windows
+# myo_ros_osx
 
 ## Overview
-This serves as the Windows-side portion of what is required to get Myo to work on a ROS network. It broadcasts the data as low-level as possible and relies on nodes running in ROS to translate the data into robot commands. Note: This approach may be revisited if the goal is to avoid modification to out-of-the-box robot software configurations, as there are standards for robots responding to cmd_vel, but nothing regarding exposing orientations (for example) as an input format. For now, the idea is that transforms from Myo data to commands (ex. Twist messages) would take place on the ROS side, and examples should be in the myo_ros package (not the myo_ros_windows package).
 
-At present, the integration with ROS is accomplished via rosserial. The rosserial libraries currently sit in include/ros_lib. 
+An OS X fork of [my_ros_windows](https://github.com/clearpathrobotics/myo_ros_windows) repository. The ROS message interface is kept same as defined by [myo_ros](https://github.com/clearpathrobotics/myo_ros) package, however this version is based on a regular ROS distribution and does not use rosserial as the original package does.
 
-Sources for the Myo-specific messages currently live in the "myo_ros" package, along with the actual translations between Myo topics and robot behaviour. They are exported into the rosserial libraries upon rosserial library generation.
-
-API is as of SDK v0.8.0. Requires Visual Studio 2013+ to compile due to new support being added for round().
+The package is shipped with Myo SDK v0.9.0 (see lib/myo.framework folder).
 
 ## ROS API
 ### Subscribed Topics
@@ -20,9 +17,3 @@ API is as of SDK v0.8.0. Requires Visual Studio 2013+ to compile due to new supp
 - gyro (geometry_msgs/Vector3): Gyroscope data in deg/s
 - accel (geometry_msgs/Vector3): Accelerometer data in g
 - status (myo_ros/Status.msg): Status of the Myo
-
-## Maybe:
-- Broadcast tfs by default? This may be best suited as a translation which occurs on the ROS side due to the larger amount of built-in related libraries
-
-## TODO:
-- Broadcast an IMU message (need covariance for this)
