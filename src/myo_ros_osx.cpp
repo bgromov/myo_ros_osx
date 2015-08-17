@@ -12,6 +12,7 @@
 #include <myo/myo.hpp>
 
 #include <ros/ros.h>
+#include <tf/transform_broadcaster.h>
 #include <geometry_msgs/Vector3Stamped.h>
 #include <geometry_msgs/QuaternionStamped.h>
 #include <myo_ros/GestureStamped.h>
@@ -33,6 +34,7 @@ class DataCollector : public myo::DeviceListener
 public:
   // Information that will be going out
   geometry_msgs::QuaternionStamped msg_rotation_;
+  tf::TransformBroadcaster br_;
   myo_ros::GestureStamped msg_gesture_;
   myo_ros::StatusStamped msg_status_;
   geometry_msgs::Vector3Stamped msg_gyro_;
@@ -114,6 +116,10 @@ public:
   // as a unit quaternion.
   void onOrientationData(myo::Myo* myo, uint64_t timestamp, const myo::Quaternion<float>& quat)
   {
+    tf::Transform myo_tf;
+    myo_tf.setOrigin(tf::Vector3(0.0, 0.0, 1.5));
+    myo_tf.setRotation(tf::Quaternion(quat.x(), quat.y(), quat.z(), quat.w()));
+
     msg_rotation_.header.frame_id = myo_frame_id_;
     msg_rotation_.header.stamp = myoToRosTime(timestamp);
     msg_rotation_.quaternion.w = quat.w();
@@ -122,6 +128,7 @@ public:
     msg_rotation_.quaternion.z = quat.z();
 
     pub_rotation_.publish(msg_rotation_);
+    br_.sendTransform(tf::StampedTransform(myo_tf, myoToRosTime(timestamp), fixed_frame_id_, myo_frame_id_));
   }
 
   // onPose() is called whenever the Myo detects that the person wearing it has changed their pose, for example,
