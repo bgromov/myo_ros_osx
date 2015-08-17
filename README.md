@@ -2,7 +2,7 @@
 
 ## Overview
 
-An OS X fork of [my_ros_windows](https://github.com/clearpathrobotics/myo_ros_windows) repository. The ROS message interface is slightly modified version of original [myo_ros](https://github.com/clearpathrobotics/myo_ros) package. So, make sure to download the version from [https://github.com/bgromov/myo_ros.git](https://github.com/bgromov/myo_ros.git). The main difference with the original package is that stamped versions of messages are being used. A timestamp is calculated with respect to ROS time.
+An OS X fork of [myo_ros_windows](https://github.com/clearpathrobotics/myo_ros_windows) repository. The ROS message interface is slightly modified version of original [myo_ros](https://github.com/clearpathrobotics/myo_ros) package. So, make sure to download the version from [https://github.com/bgromov/myo_ros.git](https://github.com/bgromov/myo_ros.git). The main difference with the original package is that stamped versions of messages are being used. A timestamp is calculated with respect to ROS time.
 
 This version is based on a regular ROS distribution and does not use rosserial as the original package does.
 
