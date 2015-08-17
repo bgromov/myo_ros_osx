@@ -19,34 +19,7 @@
 #include <myo_ros/Status.h>
 #include <std_msgs/Bool.h>
 
-// Static classes that handle callbacks + Myo instance
-// This is a limitation of rosserial + Windows. In uCs, this doesn't matter, and in Linux, we use boost::bind
 myo::Myo* my_myo = NULL;
-
-// Creates vibrations
-void vibrationCallback(const myo_ros::VibrationConstPtr& vibration)
-{
-  if (my_myo)
-  {
-    my_myo->vibrate(static_cast<myo::Myo::VibrationType>(vibration->vibration));
-  }
-}
-
-// Sets the unlock timing
-void unlockCallback(const std_msgs::BoolConstPtr& unlock)
-{
-  if (my_myo)
-  {
-    if (unlock->data == true)
-    {
-      my_myo->unlock(myo::Myo::unlockHold);
-    }
-    else
-    {
-      my_myo->unlock(myo::Myo::unlockTimed);
-    }
-  }
-}
 
 // Classes that inherit from myo::DeviceListener can be used to receive events from Myo devices. DeviceListener
 // provides several virtual functions for handling different kinds of events. If you do not override an event, the
@@ -78,8 +51,33 @@ public:
     pub_accel = nh->advertise<geometry_msgs::Vector3>("accel", 100);
     pub_status = nh->advertise<myo_ros::Status>("status", 100);
 
-    sub_vibration = nh->subscribe<myo_ros::Vibration>("vibration", 100, &vibrationCallback);
-    sub_unlock_override = nh->subscribe<std_msgs::Bool>("unlock_override", 100, &unlockCallback);
+    sub_vibration_ = nh->subscribe<myo_ros::Vibration>("vibration", 100, boost::bind(&DataCollector::vibrationCallback, this, _1));
+    sub_unlock_override_ = nh->subscribe<std_msgs::Bool>("unlock_override", 100, boost::bind(&DataCollector::unlockCallback, this, _1));
+  }
+
+  // Creates vibrations
+  void vibrationCallback(const myo_ros::VibrationConstPtr& vibration)
+  {
+    if (my_myo)
+    {
+      my_myo->vibrate(static_cast<myo::Myo::VibrationType>(vibration->vibration));
+    }
+  }
+
+  // Sets the unlock timing
+  void unlockCallback(const std_msgs::BoolConstPtr& unlock)
+  {
+    if (my_myo)
+    {
+      if (unlock->data == true)
+      {
+        my_myo->unlock(myo::Myo::unlockHold);
+      }
+      else
+      {
+        my_myo->unlock(myo::Myo::unlockTimed);
+      }
+    }
   }
 
   // onConnect() is called when a paired Myo is connected
