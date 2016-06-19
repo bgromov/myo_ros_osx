@@ -20,21 +20,17 @@
 #include <myo_ros/StatusStamped.h>
 #include <std_msgs/Bool.h>
 
-myo::Myo* my_myo = NULL;
-
-// Classes that inherit from myo::DeviceListener can be used to receive events from Myo devices. DeviceListener
-// provides several virtual functions for handling different kinds of events. If you do not override an event, the
-// default behavior is to do nothing.
-class DataCollector : public myo::DeviceListener
-{
+// This class serves as a ROS namespace wrapper and allows
+// to publish individual Myo's data in a separate namespace.
+class MyoRos {
+  ros::NodeHandlePtr pnode_;
+  myo::Myo* myo_;
+  size_t id_;
+  std::string frame_id_;
   std::string fixed_frame_id_;
-  std::string myo_frame_id_;
-  int64_t time_offset_us_;
-
-public:
+  std::string ns_;
   // Information that will be going out
   geometry_msgs::QuaternionStamped msg_rotation_;
-  tf::TransformBroadcaster br_;
   myo_ros::GestureStamped msg_gesture_;
   myo_ros::StatusStamped msg_status_;
   geometry_msgs::Vector3Stamped msg_gyro_;
@@ -48,17 +44,137 @@ public:
   ros::Subscriber sub_vibration_;
   ros::Subscriber sub_unlock_override_;
 
-  DataCollector(ros::NodeHandlePtr &nh): time_offset_us_(0), myo_frame_id_("myo_frame"), fixed_frame_id_("/world")
-  {
-    // Subscribe & publish setup
-    pub_rotation_ = nh->advertise<geometry_msgs::QuaternionStamped>("rotation", 100);
-    pub_gesture_ = nh->advertise<myo_ros::GestureStamped>("gesture", 100);
-    pub_gyro_ = nh->advertise<geometry_msgs::Vector3Stamped>("gyro", 100);
-    pub_accel_ = nh->advertise<geometry_msgs::Vector3Stamped>("accel", 100);
-    pub_status_ = nh->advertise<myo_ros::StatusStamped>("status", 100);
+  tf::TransformBroadcaster br_;
+public:
 
-    sub_vibration_ = nh->subscribe<myo_ros::Vibration>("vibration", 100, boost::bind(&DataCollector::vibrationCallback, this, _1));
-    sub_unlock_override_ = nh->subscribe<std_msgs::Bool>("unlock_override", 100, boost::bind(&DataCollector::unlockCallback, this, _1));
+  MyoRos(ros::NodeHandlePtr& parent, myo::Myo* myo, size_t id): myo_(myo), id_(id), fixed_frame_id_("/world")
+  {
+    ns_ = std::string("myo") + std::to_string(id_);
+    frame_id_ = std::string("myo") + std::to_string(id_) + std::string("_frame");
+    pnode_ = ros::NodeHandlePtr(new ros::NodeHandle(*parent, ns_));
+    // Subscribe & publish setup
+    pub_rotation_ = pnode_->advertise<geometry_msgs::QuaternionStamped>("rotation", 100);
+    pub_gesture_ = pnode_->advertise<myo_ros::GestureStamped>("gesture", 100);
+    pub_gyro_ = pnode_->advertise<geometry_msgs::Vector3Stamped>("gyro", 100);
+    pub_accel_ = pnode_->advertise<geometry_msgs::Vector3Stamped>("accel", 100);
+    pub_status_ = pnode_->advertise<myo_ros::StatusStamped>("status", 100);
+
+    sub_vibration_ = pnode_->subscribe<myo_ros::Vibration>("vibration", 100, boost::bind(&MyoRos::vibrationCallback, this, _1));
+    sub_unlock_override_ = pnode_->subscribe<std_msgs::Bool>("unlock_override", 100, boost::bind(&MyoRos::unlockCallback, this, _1));
+
+    ROS_INFO("Paired Myo with ID: %s", ns_.c_str());
+  }
+
+  std::string getNs() const
+  {
+    return ns_;
+  }
+
+  // Creates vibrations
+  void vibrationCallback(const myo_ros::VibrationConstPtr& vibration)
+  {
+    if (myo_)
+    {
+      myo_->vibrate(static_cast<myo::Myo::VibrationType>(vibration->vibration));
+    }
+  }
+
+  // Sets the unlock timing
+  void unlockCallback(const std_msgs::BoolConstPtr& unlock)
+  {
+    if (myo_)
+    {
+      if (unlock->data == true)
+      {
+        myo_->unlock(myo::Myo::unlockHold);
+      }
+      else
+      {
+        myo_->unlock(myo::Myo::unlockTimed);
+      }
+    }
+  }
+
+  void publishRotation(geometry_msgs::QuaternionStamped& msg)
+  {
+    tf::Transform myo_tf;
+    tf::Quaternion tf_quat;
+
+//    myo_tf.setOrigin(tf::Vector3(0.0, 0.0, 1.5));
+    tf::quaternionMsgToTF(msg.quaternion, tf_quat);
+    myo_tf.setRotation(tf_quat);
+
+    // Myo returns data in global inertial frame, e.g. /world
+    msg.header.frame_id = fixed_frame_id_;
+
+    pub_rotation_.publish(msg);
+    br_.sendTransform(tf::StampedTransform(myo_tf, msg.header.stamp, fixed_frame_id_, frame_id_));
+
+  }
+
+  void publishGesture(myo_ros::GestureStamped& msg)
+  {
+    msg.header.frame_id = fixed_frame_id_;
+
+    pub_gesture_.publish(msg);
+  }
+
+  void publishGyro(geometry_msgs::Vector3Stamped& msg)
+  {
+    msg.header.frame_id = fixed_frame_id_;
+
+    pub_gyro_.publish(msg);
+  }
+
+  void publishAccel(geometry_msgs::Vector3Stamped& msg)
+  {
+    msg.header.frame_id = fixed_frame_id_;
+
+    pub_accel_.publish(msg);
+  }
+
+  void publishStatus(myo_ros::StatusStamped& msg)
+  {
+    msg.header.frame_id = fixed_frame_id_;
+
+    pub_status_.publish(msg);
+  }
+};
+
+// Classes that inherit from myo::DeviceListener can be used to receive events from Myo devices. DeviceListener
+// provides several virtual functions for handling different kinds of events. If you do not override an event, the
+// default behavior is to do nothing.
+class DataCollector : public myo::DeviceListener
+{
+  typedef boost::shared_ptr<MyoRos> MyoRosPtr;
+
+  int64_t time_offset_us_;
+
+  size_t myo_counter_;
+  std::map<myo::Myo*, MyoRosPtr> myo_map_;
+
+  ros::NodeHandlePtr node_;
+
+public:
+  DataCollector(ros::NodeHandlePtr& nh): time_offset_us_(0), myo_counter_(0)
+  {
+    node_ = nh;
+  }
+
+  void addMyo(myo::Myo* myo)
+  {
+    MyoRosPtr mt;
+
+    // If new Myo found assign new ID
+    if (myo_map_.find(myo) == myo_map_.end())
+    {
+      myo_map_[myo] = MyoRosPtr(new MyoRos(node_, myo, ++myo_counter_));
+    }
+  }
+
+  void removeMyo(myo::Myo* myo)
+  {
+    myo_map_.erase(myo);
   }
 
   inline ros::Time myoToRosTime(uint64_t timestamp) {
@@ -67,113 +183,103 @@ public:
     return ros::Time(new_ts / 1000000, (new_ts % 1000000) * 1000);
   }
 
-  // Creates vibrations
-  void vibrationCallback(const myo_ros::VibrationConstPtr& vibration)
-  {
-    if (my_myo)
-    {
-      my_myo->vibrate(static_cast<myo::Myo::VibrationType>(vibration->vibration));
-    }
-  }
-
-  // Sets the unlock timing
-  void unlockCallback(const std_msgs::BoolConstPtr& unlock)
-  {
-    if (my_myo)
-    {
-      if (unlock->data == true)
-      {
-        my_myo->unlock(myo::Myo::unlockHold);
-      }
-      else
-      {
-        my_myo->unlock(myo::Myo::unlockTimed);
-      }
-    }
-  }
-
-  // onConnect() is called when a paired Myo is connected
-  void onConnect(myo::Myo* myo, uint64_t timestamp, myo::FirmwareVersion firmwareVersion)
+  void onPair(myo::Myo* myo, uint64_t timestamp, myo::FirmwareVersion firmwareVersion)
   {
     if (time_offset_us_ == 0)
     {
       time_offset_us_ = ros::Time::now().toNSec() / 1000 - timestamp; // time difference between ROS and Myo in microseconds
     }
 
-    my_myo = myo;
-    ROS_INFO("Connected");
+    this->addMyo(myo);
   }
 
-  // onConnect() is called when a paired Myo is disconnected
+  void onUnpair(myo::Myo* myo, uint64_t timestamp)
+  {
+    time_offset_us_ = 0;
+
+    this->removeMyo(myo);
+  }
+
+  // onConnect() is called when a paired Myo is connected
+  void onConnect(myo::Myo* myo, uint64_t timestamp, myo::FirmwareVersion firmwareVersion)
+  {
+    ROS_INFO("Connected to %s", myo_map_[myo]->getNs().c_str());
+  }
+
+  // onDisconnect() is called when a paired Myo is disconnected
   void onDisconnect(myo::Myo* myo, uint64_t timestamp)
   {
-    my_myo = NULL;
-    time_offset_us_ = 0;
-    ROS_INFO("Disconnected");
+    ROS_INFO("Disconnected from %s", myo_map_[myo]->getNs().c_str());
   }
 
   // onOrientationData() is called whenever the Myo device provides its current orientation, which is represented
   // as a unit quaternion.
   void onOrientationData(myo::Myo* myo, uint64_t timestamp, const myo::Quaternion<float>& quat)
   {
-    tf::Transform myo_tf;
-    myo_tf.setOrigin(tf::Vector3(0.0, 0.0, 1.5));
-    myo_tf.setRotation(tf::Quaternion(quat.x(), quat.y(), quat.z(), quat.w()));
+    geometry_msgs::QuaternionStamped msg;
 
-    msg_rotation_.header.frame_id = myo_frame_id_;
-    msg_rotation_.header.stamp = myoToRosTime(timestamp);
-    msg_rotation_.quaternion.w = quat.w();
-    msg_rotation_.quaternion.x = quat.x();
-    msg_rotation_.quaternion.y = quat.y();
-    msg_rotation_.quaternion.z = quat.z();
+    // We have to fill in all data here, except for frame id
+    msg.header.stamp = myoToRosTime(timestamp);
+    msg.quaternion.w = quat.w();
+    msg.quaternion.x = quat.x();
+    msg.quaternion.y = quat.y();
+    msg.quaternion.z = quat.z();
 
-    pub_rotation_.publish(msg_rotation_);
-    br_.sendTransform(tf::StampedTransform(myo_tf, myoToRosTime(timestamp), fixed_frame_id_, myo_frame_id_));
+    // Publish rotation and tf frame
+    myo_map_[myo]->publishRotation(msg);
   }
 
   // onPose() is called whenever the Myo detects that the person wearing it has changed their pose, for example,
   // making a fist, or not making a fist anymore.
   void onPose(myo::Myo* myo, uint64_t timestamp, myo::Pose pose)
   {
-    msg_gesture_.header.frame_id = myo_frame_id_;
-    msg_gesture_.header.stamp = myoToRosTime(timestamp);
-    msg_gesture_.gesture.gesture = pose.type();
-    pub_gesture_.publish(msg_gesture_);
+    myo_ros::GestureStamped msg;
+
+    msg.header.stamp = myoToRosTime(timestamp);
+    msg.gesture.gesture = pose.type();
+
+    myo_map_[myo]->publishGesture(msg);
   }
 
   // onGyroscopeData() called when a paired Myo has provided new gyroscope data in units of deg/s
   void onGyroscopeData(myo::Myo *myo, uint64_t timestamp, const myo::Vector3<float> &gyro)
   {
-    msg_gyro_.header.frame_id = myo_frame_id_;
-    msg_gyro_.header.stamp = myoToRosTime(timestamp);
-    msg_gyro_.vector.x = gyro.x();
-    msg_gyro_.vector.y = gyro.y();
-    msg_gyro_.vector.z = gyro.z();
-    pub_gyro_.publish(msg_gyro_);
+    geometry_msgs::Vector3Stamped msg;
+
+    msg.header.stamp = myoToRosTime(timestamp);
+    msg.vector.x = gyro.x();
+    msg.vector.y = gyro.y();
+    msg.vector.z = gyro.z();
+
+    myo_map_[myo]->publishGyro(msg);
   }
 
   // onAccelerometerData() called when a paired Myo has provided new accelerometer data in units of g.
   void onAccelerometerData(myo::Myo *myo, uint64_t timestamp, const myo::Vector3<float> &accel)
   {
-    msg_accel_.header.frame_id = myo_frame_id_;
-    msg_accel_.header.stamp = myoToRosTime(timestamp);
-    msg_accel_.vector.x = accel.x();
-    msg_accel_.vector.y = accel.y();
-    msg_accel_.vector.z = accel.z();
-    pub_accel_.publish(msg_accel_);
-  }
+    geometry_msgs::Vector3Stamped msg;
+
+    msg.header.stamp = myoToRosTime(timestamp);
+    msg.vector.x = accel.x();
+    msg.vector.y = accel.y();
+    msg.vector.z = accel.z();
+
+    myo_map_[myo]->publishAccel(msg);
+}
 
   // onArmSync() is called whenever Myo has recognized a Sync Gesture after someone has put it on their
   // arm. This lets Myo know which arm it's on and which way it's facing.
   void onArmSync(myo::Myo* myo, uint64_t timestamp, myo::Arm arm, myo::XDirection xDirection)
   {
-    msg_status_.header.frame_id = myo_frame_id_;
-    msg_status_.header.stamp = myoToRosTime(timestamp);
-    msg_status_.status.sync = true;
-    msg_status_.status.unlock = false;
-    msg_status_.status.arm = static_cast<int8_t>(arm);
-    msg_status_.status.direction = static_cast<int8_t>(xDirection);
-    pub_status_.publish(msg_status_);
+    myo_ros::StatusStamped msg;
+
+    msg.header.stamp = myoToRosTime(timestamp);
+    msg.status.sync = true;
+    msg.status.unlock = false;
+    msg.status.arm = static_cast<int8_t>(arm);
+    msg.status.direction = static_cast<int8_t>(xDirection);
+
+    myo_map_[myo]->publishStatus(msg);
   }
 
   // onArmUnsync() is called whenever Myo has detected that it was moved from a stable position on a person's arm after
@@ -181,31 +287,37 @@ public:
   // when Myo is moved around on the arm.
   void onArmUnsync(myo::Myo* myo, uint64_t timestamp)
   {
-    msg_status_.header.frame_id = myo_frame_id_;
-    msg_status_.header.stamp = myoToRosTime(timestamp);
-    msg_status_.status.sync = false;
-    msg_status_.status.unlock = false;
-    msg_status_.status.arm = static_cast<int8_t>(myo::armUnknown);
-    msg_status_.status.direction = static_cast<int8_t>(myo::xDirectionUnknown);
-    pub_status_.publish(msg_status_);
+    myo_ros::StatusStamped msg;
+
+    msg.header.stamp = myoToRosTime(timestamp);
+    msg.status.sync = false;
+    msg.status.unlock = false;
+    msg.status.arm = static_cast<int8_t>(myo::armUnknown);
+    msg.status.direction = static_cast<int8_t>(myo::xDirectionUnknown);
+
+    myo_map_[myo]->publishStatus(msg);
   }
 
   // onUnlock() is called whenever Myo has become unlocked, and will start delivering pose events.
   void onUnlock(myo::Myo* myo, uint64_t timestamp)
   {
-    msg_status_.header.frame_id = myo_frame_id_;
-    msg_status_.header.stamp = myoToRosTime(timestamp);
-    msg_status_.status.unlock = true;
-    pub_status_.publish(msg_status_);
+    myo_ros::StatusStamped msg;
+
+    msg.header.stamp = myoToRosTime(timestamp);
+    msg.status.unlock = true;
+
+    myo_map_[myo]->publishStatus(msg);
   }
 
   // onLock() is called whenever Myo has become locked. No pose events will be sent until the Myo is unlocked again.
   void onLock(myo::Myo* myo, uint64_t timestamp)
   {
-    msg_status_.header.frame_id = myo_frame_id_;
-    msg_status_.header.stamp = myoToRosTime(timestamp);
-    msg_status_.status.unlock = false;
-    pub_status_.publish(msg_status_);
+    myo_ros::StatusStamped msg;
+
+    msg.header.stamp = myoToRosTime(timestamp);
+    msg.status.unlock = false;
+
+    myo_map_[myo]->publishStatus(msg);
   }
 };
 
@@ -218,24 +330,24 @@ int main(int argc, char** argv)
     ros::init(argc, argv, "myo_ros_osx");
 
     // First, we create a Hub. The Hub provides access to one or more Myos.
-    myo::Hub hub("org.ros.myo_ros_windows");
+    myo::Hub hub("org.ros.myo_ros_osx");
 
-    ROS_INFO("Attempting to find Myo...");
-
-    // Next, we try to find a Myo (any Myo) that's nearby and connect to it. waitForAnyMyo() takes a timeout
-    // value in milliseconds. In this case we will try to find a Myo for 10 seconds, and if that fails, the function
-    // will return a null pointer.
-    my_myo = hub.waitForMyo(10000);
-
-    // If waitForMyo() returned a null pointer, we failed to find a Myo, so exit with an error message.
-    if (!my_myo)
-    {
-      ROS_FATAL("Unable to find Myo!");
-      return -1;
-    }
-
-    // We've found a Myo, let's output its MAC address.
-    ROS_INFO("Found Myo");
+//    ROS_INFO("Attempting to find Myo...");
+//
+//    // Next, we try to find a Myo (any Myo) that's nearby and connect to it. waitForAnyMyo() takes a timeout
+//    // value in milliseconds. In this case we will try to find a Myo for 10 seconds, and if that fails, the function
+//    // will return a null pointer.
+//    my_myo = hub.waitForMyo(10000);
+//
+//    // If waitForMyo() returned a null pointer, we failed to find a Myo, so exit with an error message.
+//    if (!my_myo)
+//    {
+//      ROS_FATAL("Unable to find Myo!");
+//      return -1;
+//    }
+//
+//    // We've found a Myo, let's output its MAC address.
+//    ROS_INFO("Found Myo");
 
     ros::NodeHandlePtr nh = ros::NodeHandlePtr(new ros::NodeHandle());
 
