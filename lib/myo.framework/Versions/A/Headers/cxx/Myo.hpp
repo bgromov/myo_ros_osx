@@ -65,6 +65,17 @@ public:
 
     /// @endcond
 
+    /*********** Hack to get MAC address **************/
+    std::string getMacAddress()
+    {
+      return _mac_address;
+    }
+
+    std::string getName()
+    {
+      return _name;
+    }
+
 private:
     Myo(libmyo_myo_t myo);
     ~Myo();
@@ -74,6 +85,18 @@ private:
     // Not implemented.
     Myo(const Myo&);
     Myo& operator=(const Myo&);
+
+    std::string _mac_address;
+    std::string _name;
+
+    void setMacAddress(const std::string& mac_str)
+    {
+      _mac_address = mac_str;
+    }
+    void setName(const std::string& name_str)
+    {
+      _name = name_str;
+    }
 
     friend class Hub;
 };

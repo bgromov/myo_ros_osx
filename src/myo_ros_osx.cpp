@@ -49,6 +49,21 @@ public:
 
   MyoRos(ros::NodeHandlePtr& parent, myo::Myo* myo, size_t id): myo_(myo), id_(id), fixed_frame_id_("/world")
   {
+    ros::NodeHandlePtr pnode_root = ros::NodeHandlePtr(new ros::NodeHandle("~"));
+    if (pnode_root->hasParam("static_myo_ids"))
+    {
+      XmlRpc::XmlRpcValue v;
+      pnode_root->param("static_myo_ids", v, v);
+      for (int i = 0; i < v.size(); i++)
+      {
+        if (std::string(v[i]) == myo->getMacAddress())
+        {
+          id_ = id = i + 1;
+          break;
+        }
+      }
+    }
+
     ns_ = std::string("myo") + std::to_string(id_);
     frame_id_ = std::string("myo") + std::to_string(id_) + std::string("_frame");
     pnode_ = ros::NodeHandlePtr(new ros::NodeHandle(*parent, ns_));
@@ -62,7 +77,7 @@ public:
     sub_vibration_ = pnode_->subscribe<myo_ros::Vibration>("vibration", 100, boost::bind(&MyoRos::vibrationCallback, this, _1));
     sub_unlock_override_ = pnode_->subscribe<std_msgs::Bool>("unlock_override", 100, boost::bind(&MyoRos::unlockCallback, this, _1));
 
-    ROS_INFO("Paired Myo with ID: %s", ns_.c_str());
+    ROS_INFO("Paired Myo (%s) with ID: %s", myo->getName().c_str(), ns_.c_str());
   }
 
   std::string getNs() const
