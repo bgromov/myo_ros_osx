@@ -29,6 +29,9 @@ class MyoRos {
   std::string frame_id_;
   std::string fixed_frame_id_;
   std::string ns_;
+
+  uint64_t time_offset_us_;
+
   // Information that will be going out
   geometry_msgs::QuaternionStamped msg_rotation_;
   myo_ros::GestureStamped msg_gesture_;
@@ -47,7 +50,8 @@ class MyoRos {
   tf::TransformBroadcaster br_;
 public:
 
-  MyoRos(ros::NodeHandlePtr& parent, myo::Myo* myo, size_t id): myo_(myo), id_(id), fixed_frame_id_("/world")
+  MyoRos(ros::NodeHandlePtr& parent, myo::Myo* myo, size_t id, uint64_t time_offset_us)
+    : myo_(myo), id_(id), fixed_frame_id_("/world"), time_offset_us_(time_offset_us)
   {
     ros::NodeHandlePtr pnode_root = ros::NodeHandlePtr(new ros::NodeHandle("~"));
     if (pnode_root->hasParam("static_myo_ids"))
@@ -77,7 +81,13 @@ public:
     sub_vibration_ = pnode_->subscribe<myo_ros::Vibration>("vibration", 100, boost::bind(&MyoRos::vibrationCallback, this, _1));
     sub_unlock_override_ = pnode_->subscribe<std_msgs::Bool>("unlock_override", 100, boost::bind(&MyoRos::unlockCallback, this, _1));
 
-    ROS_INFO("Paired Myo (%s) with ID: %s", myo->getName().c_str(), ns_.c_str());
+    ROS_INFO("Paired Myo (%s) with ID: %s. The time offset is: %lli", myo->getName().c_str(), ns_.c_str(), time_offset_us_);
+  }
+
+  inline ros::Time myoToRosTime(uint64_t timestamp) {
+    // Myo timestamp is in microseconds
+    uint64_t new_ts = timestamp + time_offset_us_;
+    return ros::Time(new_ts / 1000000, (new_ts % 1000000) * 1000);
   }
 
   std::string getNs() const
@@ -163,27 +173,25 @@ class DataCollector : public myo::DeviceListener
 {
   typedef boost::shared_ptr<MyoRos> MyoRosPtr;
 
-  int64_t time_offset_us_;
-
   size_t myo_counter_;
   std::map<myo::Myo*, MyoRosPtr> myo_map_;
 
   ros::NodeHandlePtr node_;
 
 public:
-  DataCollector(ros::NodeHandlePtr& nh): time_offset_us_(0), myo_counter_(0)
+  DataCollector(ros::NodeHandlePtr& nh): myo_counter_(0)
   {
     node_ = nh;
   }
 
-  void addMyo(myo::Myo* myo)
+  void addMyo(myo::Myo* myo, int64_t time_offset_us)
   {
     MyoRosPtr mt;
 
     // If new Myo found assign new ID
     if (myo_map_.find(myo) == myo_map_.end())
     {
-      myo_map_[myo] = MyoRosPtr(new MyoRos(node_, myo, ++myo_counter_));
+      myo_map_[myo] = MyoRosPtr(new MyoRos(node_, myo, ++myo_counter_, time_offset_us));
     }
   }
 
@@ -192,26 +200,16 @@ public:
     myo_map_.erase(myo);
   }
 
-  inline ros::Time myoToRosTime(uint64_t timestamp) {
-    // Myo timestamp is in microseconds
-    uint64_t new_ts = timestamp + time_offset_us_;
-    return ros::Time(new_ts / 1000000, (new_ts % 1000000) * 1000);
-  }
-
   void onPair(myo::Myo* myo, uint64_t timestamp, myo::FirmwareVersion firmwareVersion)
   {
-    if (time_offset_us_ == 0)
-    {
-      time_offset_us_ = ros::Time::now().toNSec() / 1000 - timestamp; // time difference between ROS and Myo in microseconds
-    }
+    // time difference between ROS and Myo in microseconds
+    int64_t time_offset_us = ros::Time::now().toNSec() / 1000 - timestamp;
 
-    this->addMyo(myo);
+    this->addMyo(myo, time_offset_us);
   }
 
   void onUnpair(myo::Myo* myo, uint64_t timestamp)
   {
-    time_offset_us_ = 0;
-
     this->removeMyo(myo);
   }
 
@@ -234,7 +232,7 @@ public:
     geometry_msgs::QuaternionStamped msg;
 
     // We have to fill in all data here, except for frame id
-    msg.header.stamp = myoToRosTime(timestamp);
+    msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
     msg.quaternion.w = quat.w();
     msg.quaternion.x = quat.x();
     msg.quaternion.y = quat.y();
@@ -250,7 +248,7 @@ public:
   {
     myo_ros::GestureStamped msg;
 
-    msg.header.stamp = myoToRosTime(timestamp);
+    msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
     msg.gesture.gesture = pose.type();
 
     myo_map_[myo]->publishGesture(msg);
@@ -261,7 +259,7 @@ public:
   {
     geometry_msgs::Vector3Stamped msg;
 
-    msg.header.stamp = myoToRosTime(timestamp);
+    msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
     msg.vector.x = gyro.x();
     msg.vector.y = gyro.y();
     msg.vector.z = gyro.z();
@@ -274,7 +272,7 @@ public:
   {
     geometry_msgs::Vector3Stamped msg;
 
-    msg.header.stamp = myoToRosTime(timestamp);
+    msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
     msg.vector.x = accel.x();
     msg.vector.y = accel.y();
     msg.vector.z = accel.z();
@@ -288,7 +286,7 @@ public:
   {
     myo_ros::StatusStamped msg;
 
-    msg.header.stamp = myoToRosTime(timestamp);
+    msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
     msg.status.sync = true;
     msg.status.unlock = false;
     msg.status.arm = static_cast<int8_t>(arm);
@@ -304,7 +302,7 @@ public:
   {
     myo_ros::StatusStamped msg;
 
-    msg.header.stamp = myoToRosTime(timestamp);
+    msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
     msg.status.sync = false;
     msg.status.unlock = false;
     msg.status.arm = static_cast<int8_t>(myo::armUnknown);
@@ -318,7 +316,7 @@ public:
   {
     myo_ros::StatusStamped msg;
 
-    msg.header.stamp = myoToRosTime(timestamp);
+    msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
     msg.status.unlock = true;
 
     myo_map_[myo]->publishStatus(msg);
@@ -329,7 +327,7 @@ public:
   {
     myo_ros::StatusStamped msg;
 
-    msg.header.stamp = myoToRosTime(timestamp);
+    msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
     msg.status.unlock = false;
 
     myo_map_[myo]->publishStatus(msg);
