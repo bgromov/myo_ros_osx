@@ -97,6 +97,11 @@ public:
     }
   }
 
+  ~MyoRos()
+  {
+    myo_->lock();
+  }
+
   inline ros::Time myoToRosTime(uint64_t timestamp) {
     // Myo timestamp is in microseconds
     uint64_t new_ts = timestamp + time_offset_us_;
