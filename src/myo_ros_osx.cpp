@@ -32,6 +32,8 @@ class MyoRos {
 
   uint64_t time_offset_us_;
 
+  bool use_ros_timestamps_;
+
   // Information that will be going out
   geometry_msgs::QuaternionStamped msg_rotation_;
   myo_ros::GestureStamped msg_gesture_;
@@ -51,9 +53,12 @@ class MyoRos {
 public:
 
   MyoRos(ros::NodeHandlePtr& parent, myo::Myo* myo, size_t id, uint64_t time_offset_us)
-    : myo_(myo), id_(id), fixed_frame_id_("/world"), time_offset_us_(time_offset_us)
+    : myo_(myo), id_(id), fixed_frame_id_("/world"), time_offset_us_(time_offset_us), use_ros_timestamps_(false)
   {
     ros::NodeHandlePtr pnode_root = ros::NodeHandlePtr(new ros::NodeHandle("~"));
+
+    use_ros_timestamps_ = pnode_root->param("use_ros_timestamps", false);
+
     if (pnode_root->hasParam("static_myo_ids"))
     {
       XmlRpc::XmlRpcValue v;
@@ -71,6 +76,7 @@ public:
     ns_ = std::string("myo") + std::to_string(id_);
     frame_id_ = std::string("myo") + std::to_string(id_) + std::string("_frame");
     pnode_ = ros::NodeHandlePtr(new ros::NodeHandle(*parent, ns_));
+
     // Subscribe & publish setup
     pub_rotation_ = pnode_->advertise<geometry_msgs::QuaternionStamped>("rotation", 100);
     pub_gesture_ = pnode_->advertise<myo_ros::GestureStamped>("gesture", 100);
@@ -81,13 +87,27 @@ public:
     sub_vibration_ = pnode_->subscribe<myo_ros::Vibration>("vibration", 100, boost::bind(&MyoRos::vibrationCallback, this, _1));
     sub_unlock_override_ = pnode_->subscribe<std_msgs::Bool>("unlock_override", 100, boost::bind(&MyoRos::unlockCallback, this, _1));
 
-    ROS_INFO("Paired Myo (%s) with ID: %s. The time offset is: %lli", myo->getName().c_str(), ns_.c_str(), time_offset_us_);
+    if (use_ros_timestamps_)
+    {
+      ROS_INFO("Paired Myo (%s) with ID: %s. Using ROS time stamps", myo->getName().c_str(), ns_.c_str());
+    }
+    else
+    {
+      ROS_INFO("Paired Myo (%s) with ID: %s. The time offset with ROS is: %15.3f", myo->getName().c_str(), ns_.c_str(), myoToRosTime(0).toSec());
+    }
   }
 
   inline ros::Time myoToRosTime(uint64_t timestamp) {
     // Myo timestamp is in microseconds
     uint64_t new_ts = timestamp + time_offset_us_;
-    return ros::Time(new_ts / 1000000, (new_ts % 1000000) * 1000);
+    if (use_ros_timestamps_)
+    {
+      return ros::Time::now();
+    }
+    else
+    {
+      return ros::Time(new_ts / 1000000, (new_ts % 1000000) * 1000);
+    }
   }
 
   std::string getNs() const
