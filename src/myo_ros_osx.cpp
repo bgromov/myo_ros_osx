@@ -4,6 +4,7 @@
 #include <cmath>
 #include <iostream>
 #include <iomanip>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <stdint.h>
@@ -20,6 +21,8 @@
 #include <myo_ros/StatusStamped.h>
 #include <std_msgs/Bool.h>
 
+#include <boost/circular_buffer.hpp>
+
 // This class serves as a ROS namespace wrapper and allows
 // to publish individual Myo's data in a separate namespace.
 class MyoRos {
@@ -31,6 +34,7 @@ class MyoRos {
   std::string ns_;
 
   uint64_t time_offset_us_;
+  int64_t sync_time_offset_us_;
 
   bool use_ros_timestamps_;
 
@@ -53,7 +57,10 @@ class MyoRos {
 public:
 
   MyoRos(ros::NodeHandlePtr& parent, myo::Myo* myo, size_t id, uint64_t time_offset_us)
-    : myo_(myo), id_(id), fixed_frame_id_("/world"), time_offset_us_(time_offset_us), use_ros_timestamps_(false)
+    : myo_(myo), id_(id), fixed_frame_id_("/world"),
+      time_offset_us_(time_offset_us),
+      sync_time_offset_us_(0),
+      use_ros_timestamps_(false)
   {
     ros::NodeHandlePtr pnode_root = ros::NodeHandlePtr(new ros::NodeHandle("~"));
 
@@ -94,6 +101,7 @@ public:
     else
     {
       ROS_INFO("Paired Myo (%s) with ID: %s. The time offset with ROS is: %15.3f", myo->getName().c_str(), ns_.c_str(), myoToRosTime(0).toSec());
+      ROS_INFO("Paired Myo (%s) with ID: %s. The time offset with ROS is: %lli", myo->getName().c_str(), ns_.c_str(), this->getTimeoffset());
     }
   }
 
@@ -103,8 +111,11 @@ public:
   }
 
   inline ros::Time myoToRosTime(uint64_t timestamp) {
+//    ROS_INFO_STREAM(myo_->getName() << " stamp: " << timestamp << " now.nsec: " << ros::Time::now().nsec);
     // Myo timestamp is in microseconds
-    uint64_t new_ts = timestamp + time_offset_us_;
+    uint64_t new_ts = timestamp + time_offset_us_;// + sync_time_offset_us_;
+//    ROS_INFO_STREAM(myo_->getName() << " stamp: " << new_ts);
+
     if (use_ros_timestamps_)
     {
       return ros::Time::now();
@@ -118,6 +129,21 @@ public:
   std::string getNs() const
   {
     return ns_;
+  }
+
+  size_t getId() const
+  {
+    return id_;
+  }
+
+  int64_t getTimeoffset() const
+  {
+    return time_offset_us_;
+  }
+
+  void setTimeoffset(int64_t time_offset_us)
+  {
+    time_offset_us_ = time_offset_us;
   }
 
   // Creates vibrations
@@ -200,6 +226,13 @@ class DataCollector : public myo::DeviceListener
 
   size_t myo_counter_;
   std::map<myo::Myo*, MyoRosPtr> myo_map_;
+  std::map<myo::Myo*, boost::circular_buffer<int64_t>> sync_data_;
+  std::map<myo::Myo*, int64_t> sync_data_avg_;
+  std::set<myo::Myo*> myo_sync_set_;
+
+  int64_t ref_timeoffset_ = 0;
+  size_t buf_counter = 1;
+  bool time_synced_ = false;
 
   ros::NodeHandlePtr node_;
 
@@ -207,6 +240,24 @@ public:
   DataCollector(ros::NodeHandlePtr& nh): myo_counter_(0)
   {
     node_ = nh;
+  }
+
+  void syncMyosTime()
+  {
+//    for (auto p: sync_data_avg_)
+//    {
+//      if (ref_timeoffset_ == 0)
+//      {
+//        ref_timeoffset_ = myo_map_[p.first]->getTimeoffset();
+////        continue;
+//      }
+//      int64_t sync_offset = ref_timeoffset_ - p.second;
+//      myo_map_[p.first]->syncTime(sync_offset);
+//
+//      ROS_INFO("%s sync offset: %lli, ref: %lli, avg: %lli", myo_map_[p.first]->getNs().c_str(), sync_offset, ref_timeoffset_, p.second);
+//
+//    }
+//    time_synced_ = true;
   }
 
   void addMyo(myo::Myo* myo, int64_t time_offset_us)
@@ -217,9 +268,9 @@ public:
     if (myo_map_.find(myo) == myo_map_.end())
     {
       myo_map_[myo] = MyoRosPtr(new MyoRos(node_, myo, ++myo_counter_, time_offset_us));
+      sync_data_[myo] = boost::circular_buffer<int64_t>(150); // 3 seconds of data
     }
   }
-
   void removeMyo(myo::Myo* myo)
   {
     myo_map_.erase(myo);
@@ -254,6 +305,31 @@ public:
   // as a unit quaternion.
   void onOrientationData(myo::Myo* myo, uint64_t timestamp, const myo::Quaternion<float>& quat)
   {
+    if (!time_synced_)
+    {
+      // time difference between ROS and Myo in microseconds
+      int64_t time_offset_us = ros::Time::now().toNSec() / 1000 - timestamp;
+      sync_data_[myo].push_back(time_offset_us);
+
+      if (!sync_data_[myo].full())
+      {
+        if (myo_map_[myo]->getTimeoffset() - time_offset_us > 10000)
+        {
+          myo_map_[myo]->setTimeoffset(time_offset_us);
+        }
+      }
+      else
+      {
+        time_synced_ = true;
+      }
+//      // Are all buffers full?
+//      if (myo_map_.size() == sync_data_avg_.size())
+//      {
+//        this->syncMyosTime();
+//      }
+      return;
+    }
+
     geometry_msgs::QuaternionStamped msg;
 
     // We have to fill in all data here, except for frame id
@@ -271,6 +347,8 @@ public:
   // making a fist, or not making a fist anymore.
   void onPose(myo::Myo* myo, uint64_t timestamp, myo::Pose pose)
   {
+    if(!time_synced_) return;
+
     myo_ros::GestureStamped msg;
 
     msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
@@ -282,6 +360,8 @@ public:
   // onGyroscopeData() called when a paired Myo has provided new gyroscope data in units of deg/s
   void onGyroscopeData(myo::Myo *myo, uint64_t timestamp, const myo::Vector3<float> &gyro)
   {
+    if(!time_synced_) return;
+
     geometry_msgs::Vector3Stamped msg;
 
     msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
@@ -295,6 +375,8 @@ public:
   // onAccelerometerData() called when a paired Myo has provided new accelerometer data in units of g.
   void onAccelerometerData(myo::Myo *myo, uint64_t timestamp, const myo::Vector3<float> &accel)
   {
+    if(!time_synced_) return;
+
     geometry_msgs::Vector3Stamped msg;
 
     msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
@@ -309,6 +391,8 @@ public:
   // arm. This lets Myo know which arm it's on and which way it's facing.
   void onArmSync(myo::Myo* myo, uint64_t timestamp, myo::Arm arm, myo::XDirection xDirection)
   {
+    if(!time_synced_) return;
+
     myo_ros::StatusStamped msg;
 
     msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
@@ -325,6 +409,8 @@ public:
   // when Myo is moved around on the arm.
   void onArmUnsync(myo::Myo* myo, uint64_t timestamp)
   {
+    if(!time_synced_) return;
+
     myo_ros::StatusStamped msg;
 
     msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
@@ -339,6 +425,8 @@ public:
   // onUnlock() is called whenever Myo has become unlocked, and will start delivering pose events.
   void onUnlock(myo::Myo* myo, uint64_t timestamp)
   {
+    if(!time_synced_) return;
+
     myo_ros::StatusStamped msg;
 
     msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
@@ -350,6 +438,8 @@ public:
   // onLock() is called whenever Myo has become locked. No pose events will be sent until the Myo is unlocked again.
   void onLock(myo::Myo* myo, uint64_t timestamp)
   {
+    if(!time_synced_) return;
+
     myo_ros::StatusStamped msg;
 
     msg.header.stamp = myo_map_[myo]->myoToRosTime(timestamp);
@@ -401,7 +491,7 @@ int main(int argc, char** argv)
     {
       // In each iteration of our main loop, we run the Myo event loop for a set number of milliseconds.
       // In this case, we wish to update our display 20 times a second, so we run for 1000/20 milliseconds.
-      hub.run(1000 / 20);
+      hub.run(1000 / 100);
 
       // Spin ROS
       ros::spinOnce();
